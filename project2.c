@@ -40,11 +40,15 @@ void printHelp();
 inode getInode( int n, int fd);
 char * toLower(char * str);
 void toggleDebug(char * arg);
-
+int initfs( char * n1, char * n2);
+void readShortBlock(int n, unsigned short * buffer);
+void writeShortBlock(int n, unsigned short * buffer);
+int freeBlock (unsigned short n);
 
 // Debug state. 0=off, 1=on
 int debug;
-
+int fd = -1; // file mounted to be r/w from/to
+superblock super;
 
 // Main function that contains the input loop
 int main(int argc, char *argv[]){
@@ -56,7 +60,6 @@ int main(int argc, char *argv[]){
 	if (debug){ printf("|Running in debug mode.\n");}
 
 	char input[100]; // command input buffer
-	int fd = -1; // file mounted to be r/w from/to
 
 	// Input execution loop:
 	while(1){
@@ -75,9 +78,14 @@ int main(int argc, char *argv[]){
       while(args[i] != NULL){args[++i]=strtok(NULL,delim);}
 
 			// execute command at arg[0] with proper arguments
-			if       (strcmp(args[0],"mount"     ) == 0){ fd = mount (args[1]     );
+			if       (strcmp(args[0],"mount"     ) == 0){ mount (args[1]           );
 			}else if (strcmp(args[0],"ckfiletype") == 0){ ckFileType (args[1] , fd);
 			}else if (strcmp(args[0],"filesize"  ) == 0){ fileSize   (args[1] , fd);
+			}else if (strcmp(args[0],"initfs"    ) == 0){ initfs( args[1], args[2]);
+			}else if (strcmp(args[0],"cpin"      ) == 0){ // TODO
+			}else if (strcmp(args[0],"cpout"     ) == 0){ // TODO
+			}else if (strcmp(args[0],"mkdir"     ) == 0){ // TODO
+			}else if (strcmp(args[0],"rm"        ) == 0){ // TODO
 			}else if (strcmp(args[0],"h"         ) == 0 ||
 								strcmp(args[0],"help"      ) == 0){	printHelp();
 			}else if (strcmp(args[0],"d"         ) == 0 ||
@@ -133,6 +141,149 @@ char * toLower(char * str){
 // Command functions:
 ///////////////////////////////////////////////////////////////////////////////
 
+int cpin( char * outsidePath, char * insidePath){
+	if (fd == -1){
+		printf(" Error copying file: no filesystem mounted.\n");
+		return -1;
+	}
+
+	outsideFile = open(outsidePath, 2);
+
+
+
+
+
+}
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////
+int initfs( char * n1, char * n2){
+	if (fd == -1){
+		printf(" Error initializing filesystem: no filesystem mounted.\n");
+		return -1;
+	}
+	if (n1 == NULL && n2 == NULL){
+		printf(" Error initializing filesystem: arguments invalid.\n");
+		return -1;
+	}
+
+	unsigned short numBlocks;
+	unsigned short iBlocks;
+	if (n1){ numBlocks = atoi(n1); }
+	if (n2){ iBlocks   = atoi(n2); }
+	if (iBlocks >= numBlocks){
+		printf(" Error initializing filesystem: too many iNode blocks.\n");
+		return -1;
+	}
+
+  superblock newSuper;
+	super = newSuper;
+
+
+	newSuper.isize  = iBlocks;
+	newSuper.fsize  = numBlocks;
+	newSuper.nfree  = 100;
+	newSuper.ninode = 100;
+	newSuper.time[0] = 2;
+	newSuper.time[1] = 2;
+
+	lseek(fd, 512, SEEK_SET);
+	write(fd, &newSuper, sizeof(newSuper));
+
+	int i;
+	for (i = iBlocks + 2; i < numBlocks; i++){
+		freeBlock( (unsigned short) i);
+	}
+
+
+
+
+}
+
+
+/////////////////////////////////////////////////////////////////////////////
+int allocateBlock(){
+	if (fd == -1){
+		printf(" Error allocating block: no filesystem mounted.\n");
+		return -1;
+	}
+
+
+	if (super.nfree > 0){
+		int block = super.free[super.nfree - 1];
+		super.nfree--;
+		if (super.nfree == 0){
+
+			unsigned short block[256];
+			readShortBlock(super.free[0], block);
+			unsigned short nextBlock = block[0];
+
+			readShortBlock(nextBlock, block);
+			super.nfree = block[0];
+			int i;
+			for (i = 0; i < super.nfree; i++){
+				super.free[i] = block[i + 1];
+			}
+		}
+		return block;
+	}else{
+		printf(" Error allocating block: filesystem full.\n");
+		return -1;
+	}
+}
+
+void readShortBlock(int n, unsigned short * buffer){
+	lseek(fd, 512 * n, SEEK_SET);
+	read(fd, &buffer, 512);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+int freeBlock (unsigned short n){
+	if (fd == -1){
+		printf(" Error freeing block: no filesystem mounted.\n");
+		return -1;
+	}
+	if ( n <= 1 ){
+		printf(" Error freeing block: block reserved.\n");
+		return -1;
+	}
+
+
+	if (super.nfree < 100){
+		super.free[super.nfree] = n;
+		super.nfree++;
+		return 1;
+	}else{
+		unsigned short block[256];
+
+		block[0] = super.nfree;
+		int i;
+		for (i = 0; i < super.nfree; i++){
+			block[i+1] = super.free[i];
+		}
+		super.nfree = 0;
+		super.free[super.nfree] = n;
+		super.nfree++;
+		writeShortBlock(n, block);
+
+		return 1;
+
+	}
+}
+
+void writeShortBlock(int n, unsigned short * buffer){
+	lseek(fd, 512 * n, SEEK_SET);
+	write(fd, &buffer, 512);
+}
+
+
+
 ///////////////////////////////////////////////////////////////////////////////
 // Help / H
 // Print list of available commands
@@ -170,7 +321,7 @@ int mount( char * path ){
 		return -1;
 	}
 	printf(" Mounting filesytem... ");
-	int fd = open(path, 2);
+	fd = open(path, 2);
 	if (fd == -1){
 		printf("Error mounting file: \"%s\". ", path);
 		printf("No file mounted.\n");
