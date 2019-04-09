@@ -33,25 +33,30 @@ typedef struct {
 } inode;
 
 // Function declarations to remove annoying compilation warnings
-int ckFileType( char * in, int fd );
-int fileSize( char * in , int fd );
+int ckFileType( char * in );
+int fileSize( char * in );
 int mount( char * path );
 void printHelp();
-inode getInode( int n, int fd);
+inode getInode( int n );
 char * toLower(char * str);
 void toggleDebug(char * arg);
+
 int initfs( char * n1, char * n2);
 void readShortBlock(int n, unsigned short * buffer);
 void writeShortBlock(int n, unsigned short * buffer);
 int freeBlock (unsigned short n);
 
+int cpin( char * outsidePath, char * insidePath);
+
 // Debug state. 0=off, 1=on
 int debug;
-int fd = -1; // file mounted to be r/w from/to
+int fd; // file mounted to be r/w from/to
 superblock super;
 
 // Main function that contains the input loop
 int main(int argc, char *argv[]){
+
+	fd = -1;
 
 	if (argc > 1){
 		if (strcmp(argv[1], "-d") == 0){ debug=1; }else{ debug=0; }
@@ -78,19 +83,19 @@ int main(int argc, char *argv[]){
       while(args[i] != NULL){args[++i]=strtok(NULL,delim);}
 
 			// execute command at arg[0] with proper arguments
-			if       (strcmp(args[0],"mount"     ) == 0){ mount (args[1]           );
-			}else if (strcmp(args[0],"ckfiletype") == 0){ ckFileType (args[1] , fd);
-			}else if (strcmp(args[0],"filesize"  ) == 0){ fileSize   (args[1] , fd);
-			}else if (strcmp(args[0],"initfs"    ) == 0){ initfs( args[1], args[2]);
-			}else if (strcmp(args[0],"cpin"      ) == 0){ // TODO
-			}else if (strcmp(args[0],"cpout"     ) == 0){ // TODO
-			}else if (strcmp(args[0],"mkdir"     ) == 0){ // TODO
-			}else if (strcmp(args[0],"rm"        ) == 0){ // TODO
-			}else if (strcmp(args[0],"h"         ) == 0 ||
-								strcmp(args[0],"help"      ) == 0){	printHelp();
-			}else if (strcmp(args[0],"d"         ) == 0 ||
-								strcmp(args[0],"debug"     ) == 0){ toggleDebug(args[1]);
-			}else if (strcmp(args[0],"q"         ) == 0){
+			if       (strcmp(args[0],"mount"     )==0){ mount     (args[1]);
+			}else if (strcmp(args[0],"ckfiletype")==0){ ckFileType(args[1]);
+			}else if (strcmp(args[0],"filesize"  )==0){ fileSize  (args[1]);
+			}else if (strcmp(args[0],"initfs"    )==0){ initfs    (args[1], args[2]);
+			}else if (strcmp(args[0],"cpin"      )==0){ cpin      (args[1], args[2]);
+			}else if (strcmp(args[0],"cpout"     )==0){ // TODO
+			}else if (strcmp(args[0],"mkdir"     )==0){ // TODO
+			}else if (strcmp(args[0],"rm"        )==0){ // TODO
+			}else if (strcmp(args[0],"h"         )==0 ||
+								strcmp(args[0],"help"      )==0){	printHelp();
+			}else if (strcmp(args[0],"d"         )==0 ||
+								strcmp(args[0],"debug"     )==0){ toggleDebug(args[1]);
+			}else if (strcmp(args[0],"q"         )==0){
 				printf(" Exiting...\n");
 				if (fd != -1){ close(fd); }
 				exit(0);
@@ -110,7 +115,7 @@ int main(int argc, char *argv[]){
 
 ///////////////////////////////////////////////////////////////////////////////
 // Get iNode n from filesystem fd
-inode getInode( int n, int fd){
+inode getInode( int n ){
 	inode node;
 	if (fd == -1){
 		printf(" Error getting inode: No filesystem mounted.\n");
@@ -147,11 +152,21 @@ int cpin( char * outsidePath, char * insidePath){
 		return -1;
 	}
 
-	outsideFile = open(outsidePath, 2);
+	int outsideFile = open(outsidePath, 2);
 
 
+	// Split the input path on "/"
+	char delim[] = "/";
+	int i = 0;
+	char * args[50];
+	args[i] = toLower(strtok(insidePath, delim));
+	while(args[i] != NULL){args[++i]=strtok(NULL,delim);}
 
-
+	// For each part of the path:
+	for (i = 0; args[i] != NULL; i++){
+		printf("%s -> ", args[i]);
+	}
+	printf("\n");
 
 }
 
@@ -183,8 +198,7 @@ int initfs( char * n1, char * n2){
 
   superblock newSuper;
 	super = newSuper;
-
-
+	
 	newSuper.isize  = iBlocks;
 	newSuper.fsize  = numBlocks;
 	newSuper.nfree  = 100;
@@ -334,7 +348,7 @@ int mount( char * path ){
 ///////////////////////////////////////////////////////////////////////////////
 // ckfiletype
 // Check inode and display info about it
-int ckFileType( char * in, int fd ){
+int ckFileType( char * in ){
 	if (fd == -1){
 		printf(" Error checking file type: no filesystem mounted.\n");
 		return -1;
@@ -352,7 +366,7 @@ int ckFileType( char * in, int fd ){
 		return -1;
 	}
 
-	inode node = (inode) getInode( n, fd );
+	inode node = (inode) getInode( n );
 	if (debug){ printf("|Getting flags from iNode...\n"); }
 	unsigned short flags = node.flags;
   if (debug){ printf("|Read flags as:\n"); }
@@ -385,7 +399,7 @@ int ckFileType( char * in, int fd ){
 		case 1: printf("  Large File (>4kB)\n");
 	}
 
-	fileSize( in, fd );
+	fileSize( in );
 
 	return 0;
 }
@@ -393,7 +407,7 @@ int ckFileType( char * in, int fd ){
 ///////////////////////////////////////////////////////////////////////////////
 // filesize
 // Check inode and display its file's size
-int fileSize( char * in , int fd ){
+int fileSize( char * in ){
 
 	if (fd == -1){
 		printf(" Error checking file size: no filesystem mounted.\n");
@@ -413,7 +427,7 @@ int fileSize( char * in , int fd ){
 		return -1;
 	}
 
-	inode node = (inode) getInode( m, fd );
+	inode node = (inode) getInode( m );
 	if (debug){ printf("| Size 0 = %d\n", (int)(node.size0)); }
 	if (debug){ printf("| Size 1 = %d\n", (int)(node.size1)); }
 
