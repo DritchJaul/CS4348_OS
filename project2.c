@@ -32,6 +32,21 @@ typedef struct {
 	unsigned short modtime[2];
 } inode;
 
+typedef struct {
+	unsigned short inode;
+	char name[14];
+} directoryEntry;
+
+typedef struct {
+	unsigned short size;
+	unsigned short addresses[100];
+} chainBlock;
+
+typedef struct {
+	char contents[512];
+} charBlock;
+
+
 // Function declarations to remove annoying compilation warnings
 int ckFileType( char * in );
 int fileSize( char * in );
@@ -42,25 +57,87 @@ char * toLower(char * str);
 void toggleDebug(char * arg);
 
 int initfs( char * n1, char * n2);
-void readShortBlock(int n, unsigned short * buffer);
-void writeShortBlock(int n, unsigned short * buffer);
 int freeBlock (unsigned short n);
+int allocateBlock();
 
 int cpin( char * outsidePath, char * insidePath);
 
+
 // Debug state. 0=off, 1=on
 int debug;
+
+char * filesystemName[100];
 int fd; // file mounted to be r/w from/to
 superblock super;
+
+
+
+
+void readShortBlock(int n, unsigned short * buffer){
+	lseek(fd, 512 * n, SEEK_SET);
+	read(fd, &buffer, 512);
+}
+void readCharBlock(int n, char * buffer){
+	lseek(fd, 512 * n, SEEK_SET);
+	read(fd, &buffer, 512);
+}
+
+void readDirectoryEntryBlock(int n, directoryEntry * buffer){
+	lseek(fd, 512 * n, SEEK_SET);
+	read(fd, &buffer, 512);
+}
+
+void readDirectoyEntry( int block, int n, directoryEntry entry){
+	lseek(fd, 512 * block + 16*n, SEEK_SET);
+	read(fd, &entry, sizeof(entry));
+}
+
+
+void readSuperblock(){
+	lseek(fd, 512, SEEK_SET);
+	read(fd, &super, sizeof(super));
+}
+
+
+void writeShortBlock(int n, unsigned short * buffer){
+	if(debug){printf("|Writing %d bytes to file at %x...\n", sizeof(buffer), 512*n);}
+	lseek(fd, 512 * n, SEEK_SET);
+	write(fd, &buffer, 512);
+}
+void writeCharBlock(int n, char * buffer){
+	if(debug){printf("|Writing %d bytes to file at block %d (%x)...\n", sizeof(buffer), n, 512 * n);}
+	lseek(fd, 512 * n, SEEK_SET);
+	write(fd, &buffer, 512);
+}
+void writeSuperblock(){
+	if(debug){printf("|Writing %d bytes to file...\n", sizeof(super));}
+	lseek(fd, 512, SEEK_SET);
+	write(fd, &super, sizeof(super));
+}
+
+void writeInode( int n, inode node ){
+	if(debug){printf("|Writing %d bytes to file...\n", sizeof(node));}
+	lseek(fd, 512 * 2 + (n-1) * 32, SEEK_SET);
+	write(fd, &node, sizeof(node));
+}
+
+void writeDirectoyEntry( int block, int n, directoryEntry entry){
+	if(debug){printf("|Writing %d bytes to file...\n", sizeof(entry));}
+	lseek(fd, 512 * block + 16*n, SEEK_SET);
+	write(fd, &entry, sizeof(entry));
+}
+
+
+
 
 // Main function that contains the input loop
 int main(int argc, char *argv[]){
 
 	fd = -1;
 
-	if (argc > 1){
-		if (strcmp(argv[1], "-d") == 0){ debug=1; }else{ debug=0; }
-	}
+	// if (argc > 1){
+	// 	if (strcmp(argv[1], "-d") == 0){ debug=1; }else{ debug=0; }
+	// }
 
 	if (debug){ printf("|Running in debug mode.\n");}
 
@@ -89,7 +166,7 @@ int main(int argc, char *argv[]){
 			}else if (strcmp(args[0],"initfs"    )==0){ initfs    (args[1], args[2]);
 			}else if (strcmp(args[0],"cpin"      )==0){ cpin      (args[1], args[2]);
 			}else if (strcmp(args[0],"cpout"     )==0){ // TODO
-			}else if (strcmp(args[0],"mkdir"     )==0){ // TODO
+			}else if (strcmp(args[0],"mkdir"     )==0){ mkdirectory( args[1] );
 			}else if (strcmp(args[0],"rm"        )==0){ // TODO
 			}else if (strcmp(args[0],"h"         )==0 ||
 								strcmp(args[0],"help"      )==0){	printHelp();
@@ -121,12 +198,12 @@ inode getInode( int n ){
 		printf(" Error getting inode: No filesystem mounted.\n");
 		return node;
 	}
-	if (debug){ printf("|Getting inode...\n"); }
-	if (debug){ printf("|Seeking to %d\n", 512*2 + (n-1)*32); }
+	// if (debug){ printf("|Getting inode...\n"); }
+	// if (debug){ printf("|Seeking to %d\n", 512*2 + (n-1)*32); }
 	lseek(fd, 512 * 2 + (n-1) * 32, SEEK_SET);
-	if (debug){ printf("|Reading from filesystem to node struct...\n"); }
+	// if (debug){ printf("|Reading from filesystem to node struct...\n"); }
 	read(fd, &node, sizeof(node));
-	if (debug){ printf("|Got iNode successfully.\n"); }
+	// if (debug){ printf("|Got iNode successfully.\n"); }
 	return node;
 }
 
@@ -152,8 +229,12 @@ int cpin( char * outsidePath, char * insidePath){
 		return -1;
 	}
 
-	int outsideFile = open(outsidePath, 2);
+	if (strlen(outsidePath) < 1 || strlen(insidePath) < 1){
+		printf(" Error copying file: malformed args.\n");
+		return -1;
+	}
 
+	int outsideFile = open(outsidePath, 2);
 
 	// Split the input path on "/"
 	char delim[] = "/";
@@ -162,22 +243,211 @@ int cpin( char * outsidePath, char * insidePath){
 	args[i] = toLower(strtok(insidePath, delim));
 	while(args[i] != NULL){args[++i]=strtok(NULL,delim);}
 
+	inode directory = getInode(1);
 	// For each part of the path:
 	for (i = 0; args[i] != NULL; i++){
-		printf("%s -> ", args[i]);
+		int j;
+		for (j = 0; j < 8; j++){
+			if (directory.addr[j] > 1){
+				directoryEntry files[512/16];
+				readCharBlock( directory.addr[j], (char *) files );
+				int k;
+				for (k = 0; k < 512/16; k++){
+					if (files[k].inode > 1){
+						printf("%s\n", files[k].name);
+					}
+				}
+			}else{
+				printf(" No such path in the V6 filesystem:\n ");
+				int k;
+				for(k = 0; k <=i; k++){
+					printf("/%s", args[k]);
+				}
+				printf("\n");
+				return -1;
+			}
+		}
 	}
 	printf("\n");
+	return 1;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+int mkdirectory(char * name){
+	if (fd == -1){
+		printf(" Error making directory: no filesystem mounted.\n");
+		return -1;
+	}
+	if (strlen(name) < 1){
+		printf(" Error making directory: no name given.\n");
+		return -1;
+	}
+
+	// Split the input path on "/"
+	char delim[] = "/";
+	int i = 0;
+	char * args[50];
+	args[i] = strtok(name, delim);
+	while(args[i] != NULL){args[++i]=strtok(NULL,delim);}
+
+
+	if(debug){printf("|Attempting to find: %s\n", name);}
+
+	unsigned short currentAddress = 1;
+	inode directory = getInode(1);
+
+	// For each part of the path:
+	for (i = 0; args[i] != NULL; i++){
+		if(debug){printf("|Searching for path element: %s\n", args[i]);}
+		// mkdir user,files,a,NULL,....
+		if (args[i+1] == NULL){
+			if(debug){printf("|Searching for inode for file: %s\n", args[i]);}
+			// Make an inode
+			inode node;
+			int l;
+			if(debug){printf("|Searching through %d inodes in %d blocks.\n", super.isize*16, super.isize);}
+			for (l = 1; l < super.isize * 16 + 1; l++){
+				node = getInode(l);
+				if (! (node.flags & 0100000) ){
+					if(debug){printf("| Inode %d with flags: %o found.\n", l, node.flags );}
+
+					if(debug){printf("|Searching if file already exists ...\n");}
+
+					int j;
+					for (j = 0; j < 8; j++){
+						if (directory.addr[j] < 1){
+							if(debug){printf("|Reached end of directory entries.\n");}
+							break;
+						}
+						directoryEntry files[512/16];
+						readDirectoryEntryBlock( directory.addr[j], files);
+						int k;
+						for (k = 0; k < 512/16; k++){
+							if (debug) { printf("| Checking if %s == %s...\n", args[i], files[k].name);}
+							if (strcmp((char *)files[k].name, args[i]) == 0){
+
+								printf(" Error making directory: file %s already exists.\n", args[i] );
+								return 0;
+							}
+						}
+					}
+					if(debug){printf("|Finding unallocated directory entry...\n");}
+
+					for (j = 0; j < 8; j++){
+						if (directory.addr[j] < 1){
+							if(debug){printf("|Directory data block full, adding new block...\n");}
+							directory.addr[j] = allocateBlock();
+						}
+
+
+						// directoryEntry files[512/16];
+						// if(debug){printf("|Reading addr[%d]...\n",  j);}
+						// readDirectoryEntryBlock( directory.addr[j],  files );
+						// int k;
+						// if(debug){
+						// 	for (k = 0; k < 512/16; k++){
+						// 		printf("|Entry: %d, inode: %d, name: \"%s\"\n",k, files[k].inode, files[k].name );
+						// 	}
+						// }
+						int k;
+						for (k = 0; k < 512/16; k++){
+
+							directoryEntry file;
+							readDirectoyEntry( directory.addr[j], k, file );
+
+							if(debug){printf("|Checking file #%d, inode:%d, \"%s\"\n", k, file.inode, file.name);}
+							if (file.inode == 0){
+								if(debug){printf("|Found unallocated directory entry #%d.\n", k);}
+
+								node.flags = 0140000;
+								node.size0 = 0;
+								node.size1 = 32;
+								node.addr[0] = allocateBlock();
+
+								directoryEntry autoEntries[2] = {
+									{l,              "." },
+									{currentAddress, ".."}
+								};
+
+								if(debug){printf("|Writting new directory's contents (., ..)\n");}
+								writeCharBlock(node.addr[0], (char *) autoEntries);
+								// writeDirectoyEntry( node.addr[j], 0, files[0]);
+								// writeDirectoyEntry( node.addr[j], 1, files[1]);
+
+								if(debug){printf("|Writting new directory's inode.\n");}
+								// writeCharBlock( l + 1, (char *) &node);
+								writeInode( l, node );
+
+								if(debug){printf("|Writting parent directory's entry for new directory.\n");}
+
+								directoryEntry newFile = { l, "" };
+								strcpy((char *) newFile.name, args[i]);
+
+								writeDirectoyEntry( directory.addr[j], k, newFile);
+
+
+
+								return 1;
+							}
+						}
+					}
+				}else{
+					if(debug){printf("| Inode %d with flags: %o not available.\n", l, node.flags );}
+				}
+			}
+			printf(" Error making directory: directory full / no inode available.\n" );
+			return 0;
+		}else{
+			int j;
+			for (j = 0; j < 8; j++){
+				if (directory.addr[j] > 1){
+					directoryEntry files[512/16];
+					readDirectoryEntryBlock( directory.addr[j], files );
+					int k;
+					for (k = 0; k < 512/16; k++){
+						if (strcmp(files[k].name, args[i]) == 0){
+
+							inode newDirectory = getInode(files[k].inode);
+							if (newDirectory.flags & 040000){
+								directory = getInode(files[k].inode);
+								currentAddress = files[k].inode;
+								j = 8;
+								break;
+							}else{
+								printf(" %s is not a directory.\n", args[i]);
+							}
+						}
+					}
+				}else{
+					printf(" No such path in the V6 filesystem:\n ");
+					int k;
+					for(k = 0; k <=i; k++){
+						printf("/%s", args[k]);
+					}
+					printf("\n");
+					return -1;
+				}
+			}
+		}
+
+
+	}
+	printf("\n");
+
+
+
+
+
+
+
+
 
 }
 
 
-
-
-
-
-
 //////////////////////////////////////////////////////////////////////////////
 int initfs( char * n1, char * n2){
+
 	if (fd == -1){
 		printf(" Error initializing filesystem: no filesystem mounted.\n");
 		return -1;
@@ -186,6 +456,16 @@ int initfs( char * n1, char * n2){
 		printf(" Error initializing filesystem: arguments invalid.\n");
 		return -1;
 	}
+	close(fd);
+
+	fclose(fopen( filesystemName, "w"));
+
+	fd = open( filesystemName, 2);
+	if (fd == -1){
+		printf("Could not clear file \"%s\", also mounted file is closed sorry\n", filesystemName);
+		return -1;
+	}
+
 
 	unsigned short numBlocks;
 	unsigned short iBlocks;
@@ -196,30 +476,53 @@ int initfs( char * n1, char * n2){
 		return -1;
 	}
 
-  superblock newSuper;
-	super = newSuper;
-	
-	newSuper.isize  = iBlocks;
-	newSuper.fsize  = numBlocks;
-	newSuper.nfree  = 100;
-	newSuper.ninode = 100;
-	newSuper.time[0] = 2;
-	newSuper.time[1] = 2;
+	super.isize  = iBlocks;
+	super.fsize  = numBlocks;
+	super.nfree  = 100;
+	super.ninode = 100;
+	super.time[0] = 2;
+	super.time[1] = 2;
 
 	lseek(fd, 512, SEEK_SET);
-	write(fd, &newSuper, sizeof(newSuper));
+	write(fd, &super, sizeof(super));
 
 	int i;
 	for (i = iBlocks + 2; i < numBlocks; i++){
 		freeBlock( (unsigned short) i);
 	}
+	writeSuperblock();
+
+	inode node;
+	node.flags = 0100000 | 040000;
+	node.nlinks = 1;
+	node.uid = '\0';
+	node.gid = '\0';
+	node.size0 = '\0';
+	node.size1 = 32;
+
+	node.addr[0] = allocateBlock();
+	node.addr[1] = 0;
+	node.addr[2] = 0;
+	node.addr[3] = 0;
+	node.addr[4] = 0;
+	node.addr[5] = 0;
+	node.addr[6] = 0;
+	node.addr[7] = 0;
+
+	if(debug){printf("|Allocated block #%d to the root directory.\n", node.addr[0]);}
+
+	directoryEntry autoEntries = {1,"ROOT"};
+
+	if(debug){printf("|Writting root directory's contents (.)\n");}
+	writeDirectoyEntry( node.addr[0], 0, autoEntries);
 
 
+	if(debug){printf("|Writting root directory's inode.\n");}
+	writeInode(1, node);
+	// writeCharBlock( 2, (char *) &node);
 
 
 }
-
-
 /////////////////////////////////////////////////////////////////////////////
 int allocateBlock(){
 	if (fd == -1){
@@ -250,14 +553,20 @@ int allocateBlock(){
 		return -1;
 	}
 }
-
-void readShortBlock(int n, unsigned short * buffer){
-	lseek(fd, 512 * n, SEEK_SET);
-	read(fd, &buffer, 512);
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
+//
+// typedef struct {
+// 	unsigned short size;
+// 	unsigned short addresses[100];
+// } chainBlock;
+//
+// typedef struct {
+// 	char contents[512];
+// } charBlock;
+
+///////////////////////////////////////////////////////////////////////////////
+// 7999
 int freeBlock (unsigned short n){
 	if (fd == -1){
 		printf(" Error freeing block: no filesystem mounted.\n");
@@ -272,29 +581,40 @@ int freeBlock (unsigned short n){
 	if (super.nfree < 100){
 		super.free[super.nfree] = n;
 		super.nfree++;
+
+		unsigned short block[256];
+		int i;
+		for (i=0; i < 256; i++){
+			block[i] = 0;
+		}
+
+		writeShortBlock(n, block);
+
 		return 1;
 	}else{
+
 		unsigned short block[256];
+		int i;
+		for (i=0; i < 256; i++){
+			block[i] = 0;
+		}
 
 		block[0] = super.nfree;
-		int i;
+
 		for (i = 0; i < super.nfree; i++){
 			block[i+1] = super.free[i];
 		}
+		writeShortBlock(n, block);
+
 		super.nfree = 0;
 		super.free[super.nfree] = n;
 		super.nfree++;
-		writeShortBlock(n, block);
 
 		return 1;
 
 	}
 }
-
-void writeShortBlock(int n, unsigned short * buffer){
-	lseek(fd, 512 * n, SEEK_SET);
-	write(fd, &buffer, 512);
-}
+//////////////////////////////////////////////////////////////////////////////
 
 
 
@@ -335,7 +655,12 @@ int mount( char * path ){
 		return -1;
 	}
 	printf(" Mounting filesytem... ");
+
 	fd = open(path, 2);
+
+	strcpy( filesystemName, path);
+
+	readSuperblock();
 	if (fd == -1){
 		printf("Error mounting file: \"%s\". ", path);
 		printf("No file mounted.\n");
